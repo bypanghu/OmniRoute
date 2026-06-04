@@ -66,7 +66,6 @@ function applyKimiRequestDefaults(body: unknown, defaults?: JsonRecord | null): 
   const withDefaults = applyProviderRequestDefaults(body, defaults);
   const record = asRecord(withDefaults);
   if (record && hasActiveKimiThinking(record) && hasTools(record)) {
-    // 此处 kimi 开启了 thinking 功能且存在工具调用，确保 tool_calls 中包含 reasoning_content 字段以兼容老版本 Kimi 后端的要求
     return ensureToolCallReasoningContent(record);
   }
   return withDefaults;

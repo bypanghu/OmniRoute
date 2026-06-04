@@ -129,6 +129,7 @@ const executors = {
   "kimi-web": new KimiWebExecutor(),
   kimi: new KimiWebExecutor(), // Alias
   "kimi-coding-apikey": new KimiExecutor(), // Alias
+  "kimi-coding": new KimiExecutor(), // Alias
   "doubao-web": new DoubaoWebExecutor(),
   db: new DoubaoWebExecutor(), // Alias
   "qwen-web": new QwenWebExecutor(),
