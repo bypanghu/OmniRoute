@@ -47,7 +47,9 @@ export const HIDEABLE_SIDEBAR_ITEM_IDS = [
   // Costs section
   "costs-pricing",
   "costs-budget",
+  "costs-free-tiers",
   "costs-quota-share",
+  "free-provider-rankings",
   // Monitoring > Audit
   "audit",
   "audit-mcp",
@@ -62,6 +64,7 @@ export const HIDEABLE_SIDEBAR_ITEM_IDS = [
   "agent-skills",
   "mcp",
   "a2a",
+  "plugins",
   // Gamification
   "leaderboard",
   "profile",
@@ -469,6 +472,20 @@ const COSTS_ITEMS: readonly SidebarItemDefinition[] = [
     subtitleKey: "costsBudgetSubtitle",
     icon: "savings",
   },
+  {
+    id: "costs-free-tiers",
+    href: "/dashboard/free-tiers",
+    i18nKey: "costsFreeTiers",
+    subtitleKey: "costsFreeTiersSubtitle",
+    icon: "request_quote",
+  },
+  {
+    id: "free-provider-rankings",
+    href: "/dashboard/free-provider-rankings",
+    i18nKey: "freeProviderRankings",
+    subtitleKey: "freeProviderRankingsSubtitle",
+    icon: "leaderboard",
+  },
 ];
 
 const AUDIT_GROUP: SidebarItemGroup = {
@@ -570,6 +587,13 @@ const AGENTIC_FEATURES_ITEMS: readonly SidebarSectionChild[] = [
     i18nKey: "a2a",
     subtitleKey: "a2aSubtitle",
     icon: "device_hub",
+  },
+  {
+    id: "plugins",
+    href: "/dashboard/plugins",
+    i18nKey: "plugins",
+    subtitleKey: "pluginsSubtitle",
+    icon: "extension",
   },
 ];
 

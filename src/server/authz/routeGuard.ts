@@ -35,6 +35,24 @@ export const LOCAL_ONLY_API_PREFIXES: ReadonlyArray<string> = [
   "/api/tools/traffic-inspector/", // Traffic Inspector: http-proxy listener + system proxy (Hard Rules #15 + #17)
   "/api/plugins/", // plugins: load/execute via worker_threads + child_process (Hard Rules #15 + #17)
   "/api/plugins", // bare path: GET list + POST install also trigger plugin loading
+  "/api/system/version", // auto-update: spawns git checkout + npm install — RCE-via-tunnel surface (Hard Rules #15 + #17, found by 6A.8 route-guard gate)
+  "/api/db-backups/exportAll", // spawns tar for export archive (Hard Rules #15 + #17, found by 6A.8 route-guard gate)
+];
+
+/**
+ * LOCAL_ONLY routes whose spawn-capable segment sits AFTER a dynamic path
+ * parameter, so a flat prefix in `LOCAL_ONLY_API_PREFIXES` cannot target them
+ * without over-broadening (e.g. locking the entire `/api/providers/` subtree,
+ * which remote dashboards legitimately use for provider CRUD). These are matched
+ * by regex instead.
+ *
+ *   - `POST /api/providers/{id}/login` launches a headful Playwright Chromium
+ *     (a child process) to drive a web-cookie login. Loopback enforcement must
+ *     happen unconditionally before any auth check (Hard Rules #15 + #17), so a
+ *     leaked JWT via tunnel cannot trigger a browser spawn.
+ */
+export const LOCAL_ONLY_API_PATTERNS: ReadonlyArray<RegExp> = [
+  /^\/api\/providers\/[^/]+\/login\/?$/,
 ];
 
 /**
@@ -141,7 +159,10 @@ export function isPrivateLanHost(hostHeader: string | null): boolean {
 }
 
 export function isLocalOnlyPath(path: string): boolean {
-  return LOCAL_ONLY_API_PREFIXES.some((p) => path === p || path.startsWith(p));
+  return (
+    LOCAL_ONLY_API_PREFIXES.some((p) => path === p || path.startsWith(p)) ||
+    LOCAL_ONLY_API_PATTERNS.some((re) => re.test(path))
+  );
 }
 
 /**

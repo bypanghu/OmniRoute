@@ -89,6 +89,27 @@ test("extractApiKey parses bearer headers and isValidApiKey validates persisted 
     ),
     null
   );
+  // Security follow-up (#3300): query-string token fallbacks were removed — a
+  // credential in `?token=` must NOT be extracted (it leaks into logs/Referer).
+  assert.equal(
+    auth.extractApiKey(new Request(`http://localhost/v1/chat/completions?token=${created.key}`)),
+    null
+  );
+  // The path-scoped `/vscode/<token>/…` form (VS Code integration) still works.
+  assert.equal(
+    auth.extractApiKey(
+      new Request(`http://localhost/api/v1/vscode/${created.key}/chat/completions`)
+    ),
+    created.key
+  );
+  // …but never when the caller opts out of URL extraction (management auth path).
+  assert.equal(
+    auth.extractApiKey(
+      new Request(`http://localhost/api/v1/vscode/${created.key}/chat/completions`),
+      { allowUrl: false }
+    ),
+    null
+  );
   assert.equal(await auth.isValidApiKey(created.key), true);
   assert.equal(await auth.isValidApiKey("sk-missing"), false);
   assert.equal(await auth.isValidApiKey(""), false);
@@ -381,7 +402,9 @@ test("getProviderCredentialsWithQuotaPreflight: explicit quotaPreflightEnabled:f
   });
   // Give the connection per-window overrides (simulates a user-configured
   // threshold) — this is the field that previously caused the gate to keep going.
-  await (await import("../../src/lib/db/providers.ts")).updateProviderConnection(conn.id, {
+  await (
+    await import("../../src/lib/db/providers.ts")
+  ).updateProviderConnection(conn.id, {
     quotaWindowThresholds: { primary: 50 },
   });
 
@@ -679,7 +702,6 @@ test("getProviderCredentials retains rate-limited accounts when allowRateLimited
   assert.equal(blocked.allRateLimited, true);
   assert.equal(bypassed.connectionId, connection.id);
 });
-
 
 test("getProviderCredentials retains terminal accounts for combo live tests", async () => {
   const connection = await seedConnection("openai", {
@@ -1055,6 +1077,14 @@ test("markAccountUnavailable uses configured cooldowns for local 404 model locko
         circuitBreakerReset: 5000,
       },
     },
+    modelLockout: {
+      enabled: true,
+      baseCooldownMs: 250,
+      maxCooldownMs: 1000,
+      maxBackoffSteps: 3,
+      useExponentialBackoff: true,
+      errorCodes: [404],
+    },
   });
 
   const connection = await seedConnection("openai", {
@@ -1079,6 +1109,8 @@ test("markAccountUnavailable uses configured cooldowns for local 404 model locko
   assert.equal(updated.rateLimitedUntil, undefined);
   assert.equal(updated.lastErrorType, "not_found");
   assert.equal(Number(updated.errorCode), 404);
+
+  await settingsDb.updateSettings({ modelLockout: null });
 });
 
 test("markAccountUnavailable applies a model-only lockout for Gemini 429 responses", async () => {
@@ -1458,4 +1490,37 @@ test("markAccountUnavailable swallows auto-disable persistence errors", async ()
   } finally {
     db.prepare = originalPrepare;
   }
+});
+
+test("markAccountUnavailable persists in-memory model lockout for combo transient 429 when persistUnavailableState=false", async () => {
+  const connection = await seedConnection("openai", {
+    name: "combo-transient-test",
+  });
+  const model = "gpt-4o";
+  const connId = connection.id as string;
+
+  assert.equal(fallback.isModelLocked("openai", connId, model), false);
+
+  await auth.markAccountUnavailable(
+    connId,
+    429,
+    "Rate limit exceeded",
+    "openai",
+    model,
+    null,
+    { persistUnavailableState: false }
+  );
+
+  assert.equal(fallback.isModelLocked("openai", connId, model), true);
+
+  assert.equal(fallback.isModelLocked("openai", connId, "gpt-4o-mini"), false);
+
+  const otherConn = await seedConnection("openai", {
+    name: "other-conn",
+  });
+  assert.equal(fallback.isModelLocked("openai", (otherConn.id as string), model), false);
+
+  const updated = await providersDb.getProviderConnectionById(connId);
+  assert.equal(updated.rateLimitedUntil == null, true);
+  assert.notEqual(updated.testStatus, "unavailable");
 });

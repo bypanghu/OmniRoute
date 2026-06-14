@@ -83,6 +83,25 @@ export async function registerNodejs(): Promise<void> {
   const { initConsoleInterceptor } = await import("@/lib/consoleInterceptor");
   initConsoleInterceptor();
 
+  // Clear stale transient connection cooldowns persisted from an unclean crash.
+  // A crash mid-burst can leave far-future `rate_limited_until` values in the DB
+  // that cause every connection to be skipped by getProviderCredentials(), making
+  // all subsequent requests time out at Bottleneck's maxWaitMs (120 s default).
+  // Terminal states (banned / expired / credits_exhausted) are intentionally kept.
+  // See: https://github.com/diegosouzapw/OmniRoute/issues/3625 (Part A)
+  try {
+    const { clearStaleCrashCooldowns } = await import("@/lib/db/providers");
+    const { cleared } = clearStaleCrashCooldowns();
+    if (cleared > 0) {
+      console.log(
+        `[STARTUP] Cleared ${cleared} stale transient connection cooldown(s) from prior crash (#3625)`
+      );
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[STARTUP] Could not clear stale crash cooldowns (non-fatal):", msg);
+  }
+
   const [
     { initGracefulShutdown },
     { initApiBridgeServer },
@@ -236,6 +255,28 @@ export async function registerNodejs(): Promise<void> {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[STARTUP] Embed WS proxy failed to start (non-fatal):", msg);
+    }
+
+    try {
+      const { autoRefreshDaemon } = await import("@omniroute/open-sse/services/autoRefreshDaemon");
+      autoRefreshDaemon.start();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[STARTUP] Auto-refresh daemon failed to start (non-fatal):", msg);
+    }
+
+    // Arena ELO sync: model intelligence from the Arena AI leaderboard, powering the
+    // Free Provider Rankings page. On by default (opt out with ARENA_ELO_SYNC_ENABLED=false).
+    // Non-blocking — the initial sync is fire-and-forget and never fatal.
+    if (process.env.ARENA_ELO_SYNC_ENABLED !== "false") {
+      try {
+        const { initArenaEloSync } = await import("@/lib/arenaEloSync");
+        await initArenaEloSync();
+        console.log("[STARTUP] Arena ELO sync initialized");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("[STARTUP] Arena ELO sync failed to start (non-fatal):", msg);
+      }
     }
   }
 }
