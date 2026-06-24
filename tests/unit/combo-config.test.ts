@@ -26,6 +26,7 @@ test("getDefaultComboConfig returns a fresh copy of the defaults", () => {
   assert.equal(first.handoffThreshold, 0.85);
   assert.equal(first.maxMessagesForSummary, 30);
   assert.deepEqual(first.handoffProviders, ["codex"]);
+  assert.equal(first.nestedComboMode, "flatten");
   assert.equal(first.failoverBeforeRetry, true);
   assert.equal(first.maxSetRetries, 0);
   assert.equal(first.setRetryDelayMs, 2000);
@@ -212,9 +213,12 @@ test("combo config schema accepts explicit zero-latency opt-in controls", () => 
   assert.equal(parsed.config.predictiveTtftMs, 1800);
 });
 
-test("combo config schema rejects enabled zero-latency subfeatures without opt-in", () => {
+test("combo config schema auto-promotes the zero-latency gate for legacy configs without opt-in", () => {
+  // Pre-3.8.33 combos carry zero-latency subfeatures without the
+  // zeroLatencyOptimizationsEnabled gate. The schema now auto-promotes the gate
+  // (instead of 400-ing on the first GUI edit) so they round-trip. See #4774/#4382.
   const result = createComboSchema.safeParse({
-    name: "zero-latency-noop",
+    name: "zero-latency-legacy",
     models: ["openai/gpt-4o-mini", "anthropic/claude-3-haiku"],
     config: {
       hedging: true,
@@ -223,11 +227,45 @@ test("combo config schema rejects enabled zero-latency subfeatures without opt-i
     },
   });
 
-  assert.equal(result.success, false);
-  assert.deepEqual(
-    result.error.issues.map((issue) => issue.path.join(".")),
-    ["config.hedging", "config.predictiveTtftMs", "config.fallbackCompressionMode"]
-  );
+  assert.equal(result.success, true);
+  assert.equal(result.data.config.zeroLatencyOptimizationsEnabled, true);
+  // The enabled subfeatures are preserved verbatim.
+  assert.equal(result.data.config.hedging, true);
+  assert.equal(result.data.config.fallbackCompressionMode, "lite");
+  assert.equal(result.data.config.predictiveTtftMs, 1800);
+});
+
+test("combo config schema leaves the zero-latency gate untouched when no subfeature is enabled", () => {
+  // A plain config with no zero-latency subfeature must NOT be auto-promoted —
+  // the gate stays at its default (false) so we don't silently flip optimizations on.
+  const result = createComboSchema.safeParse({
+    name: "no-zero-latency",
+    models: ["openai/gpt-4o-mini", "anthropic/claude-3-haiku"],
+    config: {
+      fallbackCompressionMode: "off",
+    },
+  });
+
+  assert.equal(result.success, true);
+  assert.notEqual(result.data.config.zeroLatencyOptimizationsEnabled, true);
+});
+
+test("combo config schema no longer rejects v3.8.31-era removed config keys (#4382 round-trip)", () => {
+  // Keys dropped after v3.8.31 still live in stored JSON. The schema switched
+  // .strict() (which 400'd) → .passthrough(); the route + migration 103 scrub them.
+  const result = createComboSchema.safeParse({
+    name: "legacy-removed-keys",
+    models: ["openai/gpt-4o-mini", "anthropic/claude-3-haiku"],
+    config: {
+      queueDepth: 4,
+      fallbackDelayMs: 200,
+      maxComboDepth: 3,
+      shadowRouting: { enabled: false },
+      resetAwareEnabled: true,
+    },
+  });
+
+  assert.equal(result.success, true);
 });
 
 test("combo config schema allows zero-latency tuning fields when subfeatures stay disabled", () => {
@@ -531,6 +569,30 @@ test("createComboSchema accepts failoverBeforeRetry, maxSetRetries and setRetryD
   assert.equal(parsed.config.setRetryDelayMs, 1500);
 });
 
+test("createComboSchema accepts nestedComboMode and rejects invalid values", () => {
+  const parsed = createComboSchema.parse({
+    name: "nested-execute",
+    models: [{ kind: "combo-ref", comboName: "child" }],
+    strategy: "priority",
+    config: { nestedComboMode: "execute" },
+  });
+  assert.equal(parsed.config.nestedComboMode, "execute");
+
+  const flatten = createComboSchema.parse({
+    name: "nested-flatten",
+    models: ["openai/gpt-4o-mini"],
+    config: { nestedComboMode: "flatten" },
+  });
+  assert.equal(flatten.config.nestedComboMode, "flatten");
+
+  const invalid = createComboSchema.safeParse({
+    name: "nested-invalid",
+    models: ["openai/gpt-4o-mini"],
+    config: { nestedComboMode: "redirect" },
+  });
+  assert.equal(invalid.success, false);
+});
+
 test("createComboSchema accepts per-combo stickyRoundRobinLimit and rejects out-of-range", () => {
   const parsed = createComboSchema.parse({
     name: "sticky-override",
@@ -545,6 +607,24 @@ test("createComboSchema accepts per-combo stickyRoundRobinLimit and rejects out-
     models: ["openai/gpt-4o-mini"],
     strategy: "round-robin",
     config: { stickyRoundRobinLimit: 1001 },
+  });
+  assert.equal(tooHigh.success, false);
+});
+
+test("createComboSchema accepts per-combo stickyWeightedLimit and rejects out-of-range", () => {
+  const parsed = createComboSchema.parse({
+    name: "sticky-weighted",
+    models: [{ model: "openai/gpt-4o-mini", weight: 100 }],
+    strategy: "weighted",
+    config: { stickyWeightedLimit: 2 },
+  });
+  assert.equal(parsed.config.stickyWeightedLimit, 2);
+
+  const tooHigh = createComboSchema.safeParse({
+    name: "sticky-weighted-too-high",
+    models: [{ model: "openai/gpt-4o-mini", weight: 100 }],
+    strategy: "weighted",
+    config: { stickyWeightedLimit: 1001 },
   });
   assert.equal(tooHigh.success, false);
 });
@@ -598,6 +678,17 @@ test("createComboSchema rejects setRetryDelayMs out of range", () => {
     config: { setRetryDelayMs: -1 },
   });
   assert.equal(negative.success, false);
+});
+
+test("resolveComboConfig cascades nestedComboMode", () => {
+  const result = resolveComboConfig(
+    { config: { nestedComboMode: "execute" } },
+    { comboDefaults: { nestedComboMode: "flatten" } }
+  );
+  assert.equal(result.nestedComboMode, "execute");
+
+  const defaulted = resolveComboConfig({ config: {} }, { comboDefaults: {} });
+  assert.equal(defaulted.nestedComboMode, "flatten");
 });
 
 test("resolveComboConfig cascades failoverBeforeRetry, maxSetRetries and setRetryDelayMs", () => {
